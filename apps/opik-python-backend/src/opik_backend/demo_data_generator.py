@@ -42,6 +42,14 @@ tracer = trace.get_tracer(__name__)
 # it has to clear validation on its own; it cannot lean on an environment-specific bypass.
 DEMO_ID_MAX_AGE = datetime.timedelta(hours=10)
 
+# Name of the project the demo seeds into.
+#
+# The frontend keys demo-specific behaviour off this exact string (DEMO_PROJECT_NAMES in
+# apps/opik-frontend/src/constants/shared.ts) — the demo banner, and the 24h chart range the
+# compressed timeline needs to render hourly. Renaming it here without adding the new name there
+# silently drops that behaviour, so tests/unit/test_demo_project_name.py pins the two together.
+DEMO_PROJECT_NAME = "Opik Demo Agent Observability"
+
 
 @dataclass
 class DemoDataContext:
@@ -471,7 +479,7 @@ def create_demo_chatbot_project(context: DemoDataContext, base_url: str, workspa
         client: opik.Opik = None
 
         try:
-            project_name = "Opik Demo Agent Observability"
+            project_name = DEMO_PROJECT_NAME
 
             # Create the project explicitly before sending traces.
             # This is the single source of truth for whether demo data creation proceeds:
@@ -1038,7 +1046,7 @@ def create_demo_data(base_url: str, workspace_name, comet_api_key):
         # Create a fresh context for this invocation to prevent race conditions
         # when multiple users sign up concurrently
         context = DemoDataContext()
-        project_name = "Opik Demo Agent Observability"
+        project_name = DEMO_PROJECT_NAME
 
         try:
             chatbot_seeded = create_demo_chatbot_project(context, base_url, workspace_name, comet_api_key)

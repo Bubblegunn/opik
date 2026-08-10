@@ -1,18 +1,9 @@
-import { DEMO_PROJECT_NAME } from "@/constants/shared";
+import { DEMO_PROJECT_NAMES } from "@/constants/shared";
 import { DateRangePreset } from "@/shared/DateRangeSelect";
 import {
   DATE_RANGE_PRESET_PAST_24_HOURS,
   DEFAULT_DATE_PRESET,
 } from "./MetricDateRangeSelect/constants";
-
-/**
- * Keeps the demo project's picked range out of the range shared by real projects.
- *
- * Built from the full demo project name rather than a short literal like `-demo`, so it cannot
- * collide with a customer's own project that happens to be named "demo", and so it follows any
- * rename of DEMO_PROJECT_NAME on its own.
- */
-const DEMO_STORAGE_KEY_SUFFIX = `-${DEMO_PROJECT_NAME}`;
 
 /**
  * Spread straight into useMetricDateRangeWithQueryAndStorage.
@@ -45,7 +36,8 @@ export type ProjectDateRangeConfig = {
  *   placeholder gets pinned into the URL first and wins permanently.
  * - `storageKeySuffix` gives the demo project its own persistence slot. The stored range is sticky
  *   across projects and outranks any default, so without this the demo would inherit whatever range
- *   the user last picked on a real project and never apply 24h at all.
+ *   the user last picked on a real project and never apply 24h at all. It is scoped to the matched
+ *   project name, so each name in DEMO_PROJECT_NAMES keeps its own range.
  *
  * Pure on purpose: a page whose consumers share one date-range key must feed them all the same
  * values, or whichever mounts first decides and the result turns on mount order. Resolving once in
@@ -61,13 +53,16 @@ export const resolveProjectDateRangeConfig = (
   projectName: string | undefined,
   isSettled: boolean,
 ): ProjectDateRangeConfig => {
-  const isDemoProject = projectName === DEMO_PROJECT_NAME;
+  const isDemoProject =
+    projectName !== undefined && DEMO_PROJECT_NAMES.includes(projectName);
 
   return {
     defaultValue: isDemoProject
       ? DATE_RANGE_PRESET_PAST_24_HOURS
       : DEFAULT_DATE_PRESET,
     initSyncReady: isSettled,
-    storageKeySuffix: isDemoProject ? DEMO_STORAGE_KEY_SUFFIX : "",
+    // Scoped to the matched name so each demo project keeps its own range, and none of them share
+    // the slot real projects persist into.
+    storageKeySuffix: isDemoProject ? `-${projectName}` : "",
   };
 };

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { DEMO_PROJECT_NAME } from "@/constants/shared";
+import { DEMO_PROJECT_NAME, DEMO_PROJECT_NAMES } from "@/constants/shared";
 import {
   DATE_RANGE_PRESET_PAST_24_HOURS,
   DEFAULT_DATE_PRESET,
@@ -11,6 +11,27 @@ describe("resolveProjectDateRangeConfig", () => {
     const result = resolveProjectDateRangeConfig(DEMO_PROJECT_NAME, true);
 
     expect(result.defaultValue).toBe(DATE_RANGE_PRESET_PAST_24_HOURS);
+  });
+
+  // Matching is by membership in DEMO_PROJECT_NAMES, so every name in the list has to get the
+  // treatment — otherwise adding a rename there would silently do nothing.
+  it.each([...DEMO_PROJECT_NAMES])(
+    "should treat %s as a demo project",
+    (name) => {
+      const result = resolveProjectDateRangeConfig(name, true);
+
+      expect(result.defaultValue).toBe(DATE_RANGE_PRESET_PAST_24_HOURS);
+      expect(result.storageKeySuffix).toBe(`-${name}`);
+    },
+  );
+
+  it("should scope the storage slot to the matched name, not a shared literal", () => {
+    // Two demo names must not collide in one slot.
+    const suffixes = [...DEMO_PROJECT_NAMES].map(
+      (name) => resolveProjectDateRangeConfig(name, true).storageKeySuffix,
+    );
+
+    expect(new Set(suffixes).size).toBe(suffixes.length);
   });
 
   it("should leave other projects on the workspace-wide default", () => {
@@ -46,6 +67,13 @@ describe("resolveProjectDateRangeConfig", () => {
       const result = resolveProjectDateRangeConfig(DEMO_PROJECT_NAME, true);
 
       expect(result.storageKeySuffix).toBe(`-${DEMO_PROJECT_NAME}`);
+    });
+
+    it("should not treat a name absent from the list as a demo project", () => {
+      const result = resolveProjectDateRangeConfig("Opik Demo Questions", true);
+
+      expect(result.defaultValue).toBe(DEFAULT_DATE_PRESET);
+      expect(result.storageKeySuffix).toBe("");
     });
 
     it("should leave other projects on the shared storage slot", () => {
