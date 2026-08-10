@@ -11,12 +11,17 @@ If it fails, the fix is to add the new name to DEMO_PROJECT_NAMES on the fronten
 assertion. That constant is a list precisely so an old name can stay in it while a new one is rolled
 out to already-seeded workspaces.
 """
+import json
 import re
 from pathlib import Path
 
 import pytest
+from pytest_httpserver import HTTPServer
 
-from opik_backend.demo_data_generator import DEMO_PROJECT_NAME
+from opik_backend.demo_data_generator import DEMO_PROJECT_NAME, create_demo_data
+# Sibling module in the same directory; pytest puts tests/unit on sys.path, so this resolves
+# whether the suite is invoked from the app root or from tests/ (as CI does).
+from test_demo_data_uuid_window import decode_payload, register_demo_mocks
 
 FRONTEND_CONSTANTS = (
     Path(__file__).resolve().parents[3] / "opik-frontend" / "src" / "constants" / "shared.ts"
@@ -73,13 +78,45 @@ def test_the_name_list_is_not_empty_or_blank():
     assert all(name.strip() for name in names)
 
 
-def test_the_seeder_uses_the_constant_rather_than_a_literal():
-    """Both seeding paths must go through the constant, or the pin above only covers one of them."""
-    source = (
-        Path(__file__).resolve().parents[1].parent
-        / "src" / "opik_backend" / "demo_data_generator.py"
-    ).read_text()
+def test_seeding_sends_the_pinned_name_to_the_api():
+    """What the frontend actually sees is the name on the wire, so assert that rather than the source.
 
-    # One definition, no stray copies of the string elsewhere in the module.
-    assert source.count(f'"{DEMO_PROJECT_NAME}"') == 1
-    assert source.count("project_name = DEMO_PROJECT_NAME") == 2
+    Runs the real seeding entrypoint against a mock backend and captures every project-creation
+    payload plus the project_name carried on the trace batch. A source-text check could pass on dead
+    code or break on a harmless refactor; this cannot.
+    """
+    created_names = []
+    trace_project_names = []
+
+    def capture_project(request):
+        from werkzeug.wrappers import Response
+
+        created_names.append(json.loads(request.get_data()).get("name"))
+        return Response("", status=201)
+
+    def capture_traces(request):
+        from werkzeug.wrappers import Response
+
+        payload = decode_payload(request)
+        trace_project_names.extend(
+            trace.get("project_name") for trace in payload.get("traces", []))
+        return Response("", status=204)
+
+    server = HTTPServer(host="localhost", port=0)
+    server.start()
+    try:
+        register_demo_mocks(server, trace_handler=capture_traces)
+        # register_demo_mocks already answers POST /projects; add the capturing handler ahead of it.
+        server.expect_ordered_request(
+            "/v1/private/projects", method="POST").respond_with_handler(capture_project)
+        create_demo_data(server.url_for("/"), "default", "comet_api_key")
+    finally:
+        server.clear()
+        server.stop()
+
+    assert created_names, "no project was created — the seeding path did not run"
+    assert set(created_names) == {DEMO_PROJECT_NAME}, (
+        f"seeding created projects named {set(created_names)}; the frontend only recognises "
+        f"the names pinned in DEMO_PROJECT_NAMES")
+    assert trace_project_names, "no traces were posted"
+    assert set(trace_project_names) == {DEMO_PROJECT_NAME}
