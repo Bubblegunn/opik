@@ -105,10 +105,12 @@ def test_seeding_sends_the_pinned_name_to_the_api():
     server = HTTPServer(host="localhost", port=0)
     server.start()
     try:
-        register_demo_mocks(server, trace_handler=capture_traces)
-        # register_demo_mocks already answers POST /projects; add the capturing handler ahead of it.
-        server.expect_ordered_request(
-            "/v1/private/projects", method="POST").respond_with_handler(capture_project)
+        # Both handlers go in through register_demo_mocks. Registering a competing expectation
+        # afterwards would not work: an ordered expectation demands that the *next* request match it
+        # and puts the server into permanent-failure mode otherwise, so it would depend on where
+        # project creation happens to fall in the seeding flow.
+        register_demo_mocks(
+            server, trace_handler=capture_traces, project_handler=capture_project)
         create_demo_data(server.url_for("/"), "default", "comet_api_key")
     finally:
         server.clear()

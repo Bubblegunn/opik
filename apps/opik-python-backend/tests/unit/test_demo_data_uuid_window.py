@@ -86,7 +86,8 @@ class UuidWindowValidator:
         return Response("", status=204)
 
 
-def register_demo_mocks(httpserver, trace_handler=None, span_handler=None):
+def register_demo_mocks(httpserver, trace_handler=None, span_handler=None,
+                        project_handler=None):
     """Register the backend endpoints demo seeding touches.
 
     Mirrors the happy-path mocks in test_demo_data_generator; the trace/span batch endpoints are
@@ -96,7 +97,10 @@ def register_demo_mocks(httpserver, trace_handler=None, span_handler=None):
     httpserver.expect_request("/v1/private/projects/retrieve", method="POST").respond_with_data(status=404)
     httpserver.expect_request("/v1/private/projects", method="GET").respond_with_json(
         {"content": [], "page": 1, "size": 0, "total": 0})
-    httpserver.expect_request("/v1/private/projects", method="POST").respond_with_data(status=201)
+    if project_handler:
+        httpserver.expect_request("/v1/private/projects", method="POST").respond_with_handler(project_handler)
+    else:
+        httpserver.expect_request("/v1/private/projects", method="POST").respond_with_data(status=201)
 
     if trace_handler:
         httpserver.expect_request("/v1/private/traces/batch", method="POST").respond_with_handler(trace_handler)
