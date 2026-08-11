@@ -13,12 +13,6 @@ type UseMetricDateRangeWithQueryAndStorageOptions =
     localStorageKey?: string;
     excludePresets?: DateRangePreset[];
     /**
-     * Set to false while an async-derived `defaultValue` is still loading, so the placeholder
-     * default is not pinned into the URL ahead of the real one. See `initSyncReady` on
-     * useQueryParamAndLocalStorageState.
-     */
-    initSyncReady?: boolean;
-    /**
      * Appended to the resolved localStorage key, giving a caller its own persistence slot under an
      * otherwise shared key.
      *
@@ -38,7 +32,6 @@ export const useMetricDateRangeWithQueryAndStorage = (
     key = DEFAULT_DATE_URL_KEY,
     localStorageKey,
     excludePresets,
-    initSyncReady,
     storageKeySuffix = "",
     ...rest
   } = options;
@@ -56,7 +49,6 @@ export const useMetricDateRangeWithQueryAndStorage = (
     defaultValue: defaultPreset,
     queryParamConfig: StringParam,
     syncQueryWithLocalStorageOnInit: true,
-    initSyncReady,
   });
 
   const rawValue = value ?? defaultPreset;

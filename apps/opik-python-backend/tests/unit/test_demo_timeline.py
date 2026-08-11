@@ -174,6 +174,22 @@ class TestSpanTreeAlignment:
     def test_rebase_handles_no_spans(self):
         assert rebase_span_tree([], NOW) == {}
 
+    def test_a_span_referencing_a_missing_trace_is_reported_not_a_keyerror(self):
+        """Names the dataset as the problem. A bare KeyError here is swallowed by the seeder's broad
+        except and surfaces only as "demo data creation failed"."""
+        start = datetime.datetime(2026, 3, 17, 10, 0, 0)
+        orphan = {
+            "id": "orphan-span",
+            "trace_id": "trace-that-does-not-exist",
+            "start_time": start,
+            "end_time": start + datetime.timedelta(seconds=1),
+        }
+        # compress_demo_timeline lays out nothing for it, mirroring the real path.
+        _, span_times = compress_demo_timeline([], [orphan], now=NOW)
+
+        with pytest.raises(ValueError, match="not in demo_traces"):
+            build_span_writes([orphan], span_times, DemoDataContext(), "proj")
+
 
 class TestStructurePreserved:
     """Compression takes its reduction out of the gaps between conversations, so everything a user
@@ -374,8 +390,15 @@ class TestCompressionEdgeCases:
         assert NOW - min(starts) <= datetime.timedelta(hours=4, seconds=1)
 
     def test_layout_is_deterministic(self):
+        """Reordered input, not the same list twice — otherwise this only proves purity.
+
+        40 thread blocks hold traces sharing an identical start_time, and the millisecond tie-break
+        assigns its microsecond nudges in iteration order. Passing the same object could not detect
+        that; reversing the input reshuffles 80 of 116 traces if the inner loop is unsorted.
+        """
         first, _ = compress_demo_timeline(demo_traces, demo_spans, now=NOW)
-        second, _ = compress_demo_timeline(demo_traces, demo_spans, now=NOW)
+        second, _ = compress_demo_timeline(
+            list(reversed(demo_traces)), demo_spans, now=NOW)
         assert first == second
 
     def test_source_data_is_not_mutated(self):

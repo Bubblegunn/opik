@@ -179,19 +179,6 @@ describe("useMetricDateRangeWithQueryAndStorage", () => {
         DATE_RANGE_PRESET_PAST_24_HOURS,
       );
     });
-
-    it("should forward initSyncReady so the URL sync waits for an async default", () => {
-      renderHook(() =>
-        useMetricDateRangeWithQueryAndStorage({
-          defaultValue: DATE_RANGE_PRESET_PAST_24_HOURS,
-          initSyncReady: false,
-        }),
-      );
-
-      expect(useQueryParamAndLocalStorageState).toHaveBeenCalledWith(
-        expect.objectContaining({ initSyncReady: false }),
-      );
-    });
   });
 
   describe("storageKeySuffix", () => {

@@ -8,7 +8,7 @@ import { resolveProjectDateRangeConfig } from "./resolveProjectDateRangeConfig";
 
 describe("resolveProjectDateRangeConfig", () => {
   it("should default the demo project to 24 hours so its charts bucket hourly", () => {
-    const result = resolveProjectDateRangeConfig(DEMO_PROJECT_NAME, true);
+    const result = resolveProjectDateRangeConfig(DEMO_PROJECT_NAME);
 
     expect(result.defaultValue).toBe(DATE_RANGE_PRESET_PAST_24_HOURS);
   });
@@ -18,7 +18,7 @@ describe("resolveProjectDateRangeConfig", () => {
   it.each([...DEMO_PROJECT_NAMES])(
     "should treat %s as a demo project",
     (name) => {
-      const result = resolveProjectDateRangeConfig(name, true);
+      const result = resolveProjectDateRangeConfig(name);
 
       expect(result.defaultValue).toBe(DATE_RANGE_PRESET_PAST_24_HOURS);
       expect(result.storageKeySuffix).toBe(`-${name}`);
@@ -28,23 +28,25 @@ describe("resolveProjectDateRangeConfig", () => {
   it("should scope the storage slot to the matched name, not a shared literal", () => {
     // Two demo names must not collide in one slot.
     const suffixes = [...DEMO_PROJECT_NAMES].map(
-      (name) => resolveProjectDateRangeConfig(name, true).storageKeySuffix,
+      (name) => resolveProjectDateRangeConfig(name).storageKeySuffix,
     );
 
     expect(new Set(suffixes).size).toBe(suffixes.length);
   });
 
   it("should leave other projects on the workspace-wide default", () => {
-    const result = resolveProjectDateRangeConfig("My Real Project", true);
+    const result = resolveProjectDateRangeConfig("My Real Project");
 
     expect(result.defaultValue).toBe(DEFAULT_DATE_PRESET);
   });
 
-  it("should not claim the demo default before the name is known", () => {
-    const result = resolveProjectDateRangeConfig(undefined, false);
+  it("should treat an unknown name as not the demo project", () => {
+    // Callers gate on the project query, so undefined here means a failed lookup rather than
+    // "still loading" — the workspace default is the right answer.
+    const result = resolveProjectDateRangeConfig(undefined);
 
     expect(result.defaultValue).toBe(DEFAULT_DATE_PRESET);
-    expect(result.initSyncReady).toBe(false);
+    expect(result.storageKeySuffix).toBe("");
   });
 
   it("should not mistake the raw project id for a project name", () => {
@@ -52,7 +54,6 @@ describe("resolveProjectDateRangeConfig", () => {
     // project?.name instead, and an id must never read as the demo project.
     const result = resolveProjectDateRangeConfig(
       "019feaba-9c9b-71c3-93f5-905be65789c5",
-      true,
     );
 
     expect(result.defaultValue).toBe(DEFAULT_DATE_PRESET);
@@ -64,51 +65,27 @@ describe("resolveProjectDateRangeConfig", () => {
   // and the 24h default would never apply.
   describe("storageKeySuffix", () => {
     it("should give the demo project its own storage slot, named after the project", () => {
-      const result = resolveProjectDateRangeConfig(DEMO_PROJECT_NAME, true);
+      const result = resolveProjectDateRangeConfig(DEMO_PROJECT_NAME);
 
       expect(result.storageKeySuffix).toBe(`-${DEMO_PROJECT_NAME}`);
     });
 
     it("should not treat a name absent from the list as a demo project", () => {
-      const result = resolveProjectDateRangeConfig("Opik Demo Questions", true);
+      const result = resolveProjectDateRangeConfig("Opik Demo Questions");
 
       expect(result.defaultValue).toBe(DEFAULT_DATE_PRESET);
       expect(result.storageKeySuffix).toBe("");
     });
 
     it("should leave other projects on the shared storage slot", () => {
-      const result = resolveProjectDateRangeConfig("My Real Project", true);
+      const result = resolveProjectDateRangeConfig("My Real Project");
 
       expect(result.storageKeySuffix).toBe("");
     });
 
     it("should not claim the demo slot before the name resolves", () => {
-      const result = resolveProjectDateRangeConfig(undefined, false);
+      const result = resolveProjectDateRangeConfig(undefined);
 
-      expect(result.storageKeySuffix).toBe("");
-    });
-  });
-
-  describe("initSyncReady", () => {
-    it("should report ready once the caller says the name is settled", () => {
-      expect(
-        resolveProjectDateRangeConfig(DEMO_PROJECT_NAME, true).initSyncReady,
-      ).toBe(true);
-    });
-
-    it("should hold while the caller says the name is not settled", () => {
-      expect(
-        resolveProjectDateRangeConfig(undefined, false).initSyncReady,
-      ).toBe(false);
-    });
-
-    it("should treat a settled-but-nameless lookup as ready", () => {
-      // A failed project lookup: the override does not apply and the workspace default stands,
-      // which beats never syncing the URL at all.
-      const result = resolveProjectDateRangeConfig(undefined, true);
-
-      expect(result.initSyncReady).toBe(true);
-      expect(result.defaultValue).toBe(DEFAULT_DATE_PRESET);
       expect(result.storageKeySuffix).toBe("");
     });
   });

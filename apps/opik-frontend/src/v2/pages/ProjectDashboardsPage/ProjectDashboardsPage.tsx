@@ -188,7 +188,7 @@ const ProjectDashboardsPage: React.FunctionComponent = () => {
   return (
     <ProjectDashboardsContent
       projectId={projectId}
-      dateRangeConfig={resolveProjectDateRangeConfig(project?.name, true)}
+      dateRangeConfig={resolveProjectDateRangeConfig(project?.name)}
     />
   );
 };

@@ -296,7 +296,13 @@ def compress_demo_timeline(traces, spans, now=None, max_age=DEMO_ID_MAX_AGE):
 
     cursor = now - max_age
     for idx, block in enumerate(ordered_blocks):
-        for original_trace in block:
+        # Sorted, not input order: 40 of the thread blocks hold traces sharing an identical
+        # start_time, and the tie-break below hands out its microsecond nudges in iteration order.
+        # Since ids are minted from start_time, input order would otherwise decide those traces'
+        # relative order in the UI, so reordering the dataset would reshuffle conversation turns.
+        # Tie-broken on id to make the sort total.
+        for original_trace in sorted(
+                block, key=lambda item: (item["start_time"], item["id"])):
             new_start = cursor + (original_trace["start_time"] - block_starts[idx])
 
             ms_key = int(new_start.timestamp() * 1000)
@@ -384,6 +390,17 @@ def build_span_writes(spans, span_times, context: DemoDataContext, project_name:
     Returns:
     - list[SpanWrite]: Spans ready to POST
     """
+    # compress_demo_timeline only lays out spans whose trace it was given, so a span pointing at an
+    # absent trace has no entry here. Say so explicitly: the alternative is a bare KeyError that the
+    # caller's broad `except Exception` turns into "demo data creation failed" with no indication
+    # that the dataset is the problem. Unreachable on the shipped data (0 orphans of 906) — this is
+    # for whoever next edits demo_data.py.
+    orphans = sorted(span["id"] for span in spans if span["id"] not in span_times)
+    if orphans:
+        raise ValueError(
+            f"{len(orphans)} demo span(s) reference a trace that is not in demo_traces, so they "
+            f"have no place on the compressed timeline: {orphans[:5]}")
+
     # First pass: mint all time-based UUIDs so every parent span id is mapped before we
     # reference it.
     for original_span in sorted(spans, key=lambda x: x["id"]):

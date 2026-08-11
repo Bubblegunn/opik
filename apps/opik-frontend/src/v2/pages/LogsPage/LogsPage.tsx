@@ -113,7 +113,7 @@ const LogsPage = () => {
       projectName={project?.name || projectId}
       // project?.name, not projectName — the fallback to the raw id would read as "not the demo
       // project".
-      dateRangeConfig={resolveProjectDateRangeConfig(project?.name, true)}
+      dateRangeConfig={resolveProjectDateRangeConfig(project?.name)}
     />
   );
 };

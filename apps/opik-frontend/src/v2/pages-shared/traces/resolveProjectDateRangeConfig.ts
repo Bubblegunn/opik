@@ -8,16 +8,14 @@ import {
 /**
  * Spread straight into useMetricDateRangeWithQueryAndStorage.
  *
- * More than a default: it also carries when the URL may be synced (`initSyncReady`) and which
- * storage slot to persist into (`storageKeySuffix`), so callers should pass the whole object rather
- * than pick the default out of it.
+ * More than a default: it also carries which storage slot to persist into (`storageKeySuffix`), so
+ * callers should pass the whole object rather than pick the default out of it.
  *
  * Returned for every project, not just the demo one — an ordinary project gets the workspace
- * default, immediate readiness and an empty suffix.
+ * default and an empty suffix.
  */
 export type ProjectDateRangeConfig = {
   defaultValue: DateRangePreset;
-  initSyncReady: boolean;
   storageKeySuffix: string;
 };
 
@@ -29,11 +27,9 @@ export type ProjectDateRangeConfig = {
  * selected range (anything over 3 days buckets daily), so the workspace-wide 30-day default would
  * collapse the entire demo into a single bar. 24 hours buckets hourly and renders the curve.
  *
- * All three fields matter:
+ * Both fields matter:
  *
  * - `defaultValue` is the 24h override itself.
- * - `initSyncReady` holds the URL sync until the project name is known. Without it the 30-day
- *   placeholder gets pinned into the URL first and wins permanently.
  * - `storageKeySuffix` gives the demo project its own persistence slot. The stored range is sticky
  *   across projects and outranks any default, so without this the demo would inherit whatever range
  *   the user last picked on a real project and never apply 24h at all. It is scoped to the matched
@@ -44,14 +40,13 @@ export type ProjectDateRangeConfig = {
  * the parent and passing the result down makes that structurally impossible — see LogsPage, which
  * has three consumers (useLogsType, TracesSpansTab, ThreadsTab).
  *
- * @param projectName the project's name, or undefined while it is not known
- * @param isSettled whether the name is as resolved as it is going to get. A failed lookup counts as
- *   settled: the override simply does not apply and the workspace default stands, which is better
- *   than never syncing the URL at all.
+ * Callers must resolve the project before calling: both pages gate their content mount on the
+ * project query, which is what makes the captured default correct (use-local-storage-state captures
+ * `defaultValue` once). A name of undefined therefore means "not the demo project" — a failed lookup
+ * simply leaves the workspace default in place.
  */
 export const resolveProjectDateRangeConfig = (
   projectName: string | undefined,
-  isSettled: boolean,
 ): ProjectDateRangeConfig => {
   const isDemoProject =
     projectName !== undefined && DEMO_PROJECT_NAMES.includes(projectName);
@@ -60,7 +55,6 @@ export const resolveProjectDateRangeConfig = (
     defaultValue: isDemoProject
       ? DATE_RANGE_PRESET_PAST_24_HOURS
       : DEFAULT_DATE_PRESET,
-    initSyncReady: isSettled,
     // Scoped to the matched name so each demo project keeps its own range, and none of them share
     // the slot real projects persist into.
     storageKeySuffix: isDemoProject ? `-${projectName}` : "",
