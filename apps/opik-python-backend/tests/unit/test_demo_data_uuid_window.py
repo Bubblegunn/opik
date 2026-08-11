@@ -20,7 +20,7 @@ import zlib
 import pytest
 import uuid6
 
-from opik_backend.demo_data_generator import create_demo_data
+from opik_backend.demo_data_generator import DEMO_ID_MAX_AGE, create_demo_data
 
 # The smallest window an operator can configure. Validating against it covers every larger one.
 MIN_CONFIGURABLE_WINDOW = datetime.timedelta(hours=12)
@@ -53,19 +53,31 @@ def decode_payload(request):
 
 
 class UuidWindowValidator:
-    """Mock ingestion endpoint enforcing the UUIDv7 window in reject mode."""
+    """Mock ingestion endpoint enforcing the UUIDv7 window in reject mode.
 
-    def __init__(self, payload_key, resource, window=MIN_CONFIGURABLE_WINDOW):
+    `reference_now` is the instant the window is measured from. Pass one, captured once by the
+    caller: the real backend reads the clock per request, but reproducing that here would make the
+    verdict depend on two independent clock reads — the generator's, when it compresses the timeline,
+    and this validator's, per batch. The demo leaves ~2h of slack under the 12h floor, so only a
+    sizeable forward jump (a resumed CI runner, an NTP correction) could turn a correct payload into
+    `too_old`. That is a property of the clock, not of the payload this test exists to check, so it
+    should not be able to fail the test. Omitting it falls back to per-request reads, which is what
+    the standalone validator tests use to exercise the rejection logic itself.
+    """
+
+    def __init__(self, payload_key, resource, window=MIN_CONFIGURABLE_WINDOW,
+                 reference_now=None):
         self.payload_key = payload_key
         self.resource = resource
         self.window = window
+        self.reference_now = reference_now
         self.accepted = []
         self.rejections = []
 
     def __call__(self, request):
         from werkzeug.wrappers import Response
 
-        now = datetime.datetime.now()
+        now = self.reference_now or datetime.datetime.now()
         items = decode_payload(request).get(self.payload_key, [])
 
         for item in items:
@@ -169,11 +181,16 @@ def validators():
     server = HTTPServer(host="localhost", port=0)
     server.start()
     try:
-        trace_validator = UuidWindowValidator("traces", "trace")
-        span_validator = UuidWindowValidator("spans", "span")
+        # One instant for both validators, captured immediately before seeding so it sits a few
+        # milliseconds ahead of the generator's own clock read. Both are then effectively the same
+        # instant, and no amount of time spent inside seeding (HTTP, retries, sleeps) can drift the
+        # window and fail a payload that is actually correct.
+        reference_now = datetime.datetime.now()
+        trace_validator = UuidWindowValidator("traces", "trace", reference_now=reference_now)
+        span_validator = UuidWindowValidator("spans", "span", reference_now=reference_now)
         register_demo_mocks(server, trace_handler=trace_validator, span_handler=span_validator)
         create_demo_data(server.url_for("/"), "default", "comet_api_key")
-        yield trace_validator, span_validator
+        yield trace_validator, span_validator, reference_now
     finally:
         server.clear()
         server.stop()
@@ -183,37 +200,58 @@ class TestRejectModeSeeding:
     """The ticket's acceptance criterion: zero UUIDv7 rejections for traces and spans."""
 
     def test_no_trace_id_is_rejected(self, validators):
-        trace_validator, _ = validators
+        trace_validator, _, _ = validators
         assert trace_validator.rejections == [], \
             f"{len(trace_validator.rejections)} trace ids rejected, e.g. {trace_validator.rejections[:3]}"
 
     def test_no_span_id_is_rejected(self, validators):
-        _, span_validator = validators
+        _, span_validator, _ = validators
         assert span_validator.rejections == [], \
             f"{len(span_validator.rejections)} span ids rejected, e.g. {span_validator.rejections[:3]}"
 
+    def test_the_clock_skew_budget_is_intact(self, validators):
+        """States the slack the assertions above rely on, instead of leaving it implicit.
+
+        The two clock reads are pinned to one instant, so those assertions cannot flake — but that
+        only holds while the demo stays comfortably inside the window. This measures the actual
+        margin, so shrinking it (a larger DEMO_ID_MAX_AGE, a longer dataset) shows up here as a named
+        failure rather than as an occasional `too_old` somewhere else.
+        """
+        trace_validator, span_validator, reference_now = validators
+        accepted = trace_validator.accepted + span_validator.accepted
+
+        oldest_age = max(
+            reference_now - embedded_timestamp(item["id"]) for item in accepted)
+        slack = MIN_CONFIGURABLE_WINDOW - oldest_age
+
+        assert oldest_age <= DEMO_ID_MAX_AGE + datetime.timedelta(seconds=1), (
+            f"oldest id is {oldest_age} old, beyond the {DEMO_ID_MAX_AGE} the generator targets")
+        assert slack >= datetime.timedelta(hours=1), (
+            f"only {slack} of slack under the {MIN_CONFIGURABLE_WINDOW} floor — a clock correction "
+            f"or a suspended runner of that size would start rejecting valid demo ids")
+
     def test_traces_and_spans_actually_reached_the_backend(self, validators):
         """Guards against the assertions above passing because nothing was posted at all."""
-        trace_validator, span_validator = validators
+        trace_validator, span_validator, _ = validators
         assert len(trace_validator.accepted) > 100
         assert len(span_validator.accepted) > 100
 
     def test_accepted_spans_reference_accepted_traces(self, validators):
         """Span -> trace references go through the not-in-future check, so they must resolve to
         traces that were themselves accepted."""
-        trace_validator, span_validator = validators
+        trace_validator, span_validator, _ = validators
         trace_ids = {item["id"] for item in trace_validator.accepted}
         dangling = {item["trace_id"] for item in span_validator.accepted} - trace_ids
         assert dangling == set(), f"{len(dangling)} spans reference traces that never landed"
 
     def test_ids_are_unique_across_the_seed(self, validators):
-        trace_validator, span_validator = validators
+        trace_validator, span_validator, _ = validators
         ids = [item["id"] for item in trace_validator.accepted + span_validator.accepted]
         assert len(set(ids)) == len(ids)
 
     def test_span_timestamps_sit_inside_their_trace(self, validators):
         """The rebase has to hold on the real payloads, not just in the timeline unit tests."""
-        trace_validator, span_validator = validators
+        trace_validator, span_validator, _ = validators
         traces = {item["id"]: item for item in trace_validator.accepted}
 
         def parse(value):
