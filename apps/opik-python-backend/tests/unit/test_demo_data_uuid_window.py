@@ -20,7 +20,12 @@ import zlib
 import pytest
 import uuid6
 
-from opik_backend.demo_data_generator import DEMO_ID_MAX_AGE, create_demo_data
+from opik_backend.demo_data_generator import (
+    DEMO_ID_MAX_AGE,
+    create_demo_data,
+    uuid7_from_datetime,
+)
+from opik_backend.demo_data import demo_spans, demo_traces
 
 # The smallest window an operator can configure. Validating against it covers every larger one.
 MIN_CONFIGURABLE_WINDOW = datetime.timedelta(hours=12)
@@ -81,6 +86,14 @@ class UuidWindowValidator:
         items = decode_payload(request).get(self.payload_key, [])
 
         for item in items:
+            # IdGenerator.validateVersion runs first and unconditionally: a non-v7 id is a 400
+            # regardless of its timestamp. Without this the mock would accept an in-window v4 id
+            # that production rejects, and the test would claim more than it proves.
+            if uuid.UUID(item["id"]).version != 7:
+                self.rejections.append(
+                    (self.resource, item["id"], None, "not_version_7"))
+                continue
+
             timestamp = embedded_timestamp(item["id"])
             if timestamp < now - self.window:
                 self.rejections.append((self.resource, item["id"], timestamp, "too_old"))
@@ -225,16 +238,27 @@ class TestRejectModeSeeding:
         slack = MIN_CONFIGURABLE_WINDOW - oldest_age
 
         assert oldest_age <= DEMO_ID_MAX_AGE + datetime.timedelta(seconds=1), (
-            f"oldest id is {oldest_age} old, beyond the {DEMO_ID_MAX_AGE} the generator targets")
+            f"oldest id is {oldest_age} old, beyond the {DEMO_ID_MAX_AGE} age targeted by the "
+            f"generator")
         assert slack >= datetime.timedelta(hours=1), (
             f"only {slack} of slack under the {MIN_CONFIGURABLE_WINDOW} floor — a clock correction "
             f"or a suspended runner of that size would start rejecting valid demo ids")
 
-    def test_traces_and_spans_actually_reached_the_backend(self, validators):
-        """Guards against the assertions above passing because nothing was posted at all."""
+    def test_every_trace_and_span_in_the_dataset_reached_the_backend(self, validators):
+        """Exact counts, not lower bounds: the acceptance criterion is that *all* of the demo lands.
+
+        A lower bound would pass a generator that silently dropped entries, which is the failure this
+        PR exists to fix — 113 of 116 traces were being rejected, and `> 100` would not have caught
+        that either.
+
+        These are the chatbot dataset's counts alone. The test-suite-experiment path does not run
+        here: register_demo_mocks answers `POST /v1/private/projects/retrieve` with 404, so the
+        generator skips it. That path mints ids with `uuid6.uuid7()` at call time and is unaffected by
+        this change.
+        """
         trace_validator, span_validator, _ = validators
-        assert len(trace_validator.accepted) > 100
-        assert len(span_validator.accepted) > 100
+        assert len(trace_validator.accepted) == len(demo_traces)
+        assert len(span_validator.accepted) == len(demo_spans)
 
     def test_accepted_spans_reference_accepted_traces(self, validators):
         """Span -> trace references go through the not-in-future check, so they must resolve to
@@ -243,6 +267,20 @@ class TestRejectModeSeeding:
         trace_ids = {item["id"] for item in trace_validator.accepted}
         dangling = {item["trace_id"] for item in span_validator.accepted} - trace_ids
         assert dangling == set(), f"{len(dangling)} spans reference traces that never landed"
+
+    def test_every_accepted_id_is_a_v7_uuid(self, validators):
+        """The ticket states the always-on version check passes because all ids are v7 — assert it.
+
+        `uuid7_from_datetime` sets the version nibble by hand, so this is the guard on that hand-rolled
+        builder: a mistake there would produce ids that clear the window but are rejected by
+        IdGenerator.validateVersion in production.
+        """
+        trace_validator, span_validator, _ = validators
+        versions = {
+            uuid.UUID(item["id"]).version
+            for item in trace_validator.accepted + span_validator.accepted
+        }
+        assert versions == {7}, f"non-v7 ids in the seed: {versions}"
 
     def test_ids_are_unique_across_the_seed(self, validators):
         trace_validator, span_validator, _ = validators
@@ -274,12 +312,25 @@ class TestValidatorItself:
     def test_rejects_an_id_that_is_too_old(self):
         validator = UuidWindowValidator("traces", "trace")
         old = datetime.datetime.now() - datetime.timedelta(days=30)
-        stale_id = uuid.UUID(int=(int(old.timestamp() * 1000) << 80) | (0x7 << 76))
+        # Built with the generator's own minter rather than by hand: hand-assembling the version
+        # nibble leaves the RFC-4122 variant bits clear, so uuid.UUID.version returns None and the
+        # id would trip the version check instead of the too_old check this test is about.
+        stale_id = uuid7_from_datetime(old)
+        assert stale_id.version == 7
 
         response = validator(FakeRequest({"traces": [{"id": str(stale_id)}]}))
 
         assert response.status_code == 400
         assert [entry[3] for entry in validator.rejections] == ["too_old"]
+
+    def test_rejects_a_non_v7_id_even_when_its_timestamp_is_in_window(self):
+        """Production checks the version unconditionally, so an in-window v4 must still be a 400."""
+        validator = UuidWindowValidator("traces", "trace")
+
+        response = validator(FakeRequest({"traces": [{"id": str(uuid.uuid4())}]}))
+
+        assert response.status_code == 400
+        assert [entry[3] for entry in validator.rejections] == ["not_version_7"]
 
     def test_accepts_an_id_from_now(self):
         validator = UuidWindowValidator("traces", "trace")
