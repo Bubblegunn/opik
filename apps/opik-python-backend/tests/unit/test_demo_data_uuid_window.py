@@ -30,6 +30,9 @@ from opik_backend.demo_data import demo_spans, demo_traces
 # The smallest window an operator can configure. Validating against it covers every larger one.
 MIN_CONFIGURABLE_WINDOW = datetime.timedelta(hours=12)
 
+# Marks a request body decode_payload could not read. Present in the returned dict instead of raising.
+UNDECODABLE_BODY = "__undecodable__"
+
 
 def embedded_timestamp(raw_id):
     """Read back the instant the backend derives from an id, per RetentionUtils.extractInstant.
@@ -54,7 +57,10 @@ def decode_payload(request):
             return json.loads(decompress(body))
         except (OSError, zlib.error, UnicodeDecodeError, json.JSONDecodeError):
             continue
-    return {"__undecodable__": body[:32]}
+    # Deliberately not raising: a raising handler returns 500, which the generator retries, turning a
+    # clear failure into a long timeout. The caller must therefore check for this key — an
+    # undecodable body yields no items, and "no items" must not be mistaken for "nothing to reject".
+    return {UNDECODABLE_BODY: body[:32]}
 
 
 class UuidWindowValidator:
@@ -83,7 +89,18 @@ class UuidWindowValidator:
         from werkzeug.wrappers import Response
 
         now = self.reference_now or datetime.datetime.now()
-        items = decode_payload(request).get(self.payload_key, [])
+        payload = decode_payload(request)
+
+        # An unreadable body would otherwise yield zero items, zero rejections and a 204 — the mock
+        # would report success for a request it never inspected. Fail it explicitly instead.
+        if UNDECODABLE_BODY in payload:
+            self.rejections.append(
+                (self.resource, None, None, "undecodable_body"))
+            return Response(
+                json.dumps({"code": 400, "message": "could not decode request body"}),
+                status=400, content_type="application/json")
+
+        items = payload.get(self.payload_key, [])
 
         for item in items:
             # IdGenerator.validateVersion runs first and unconditionally: a non-v7 id is a 400
@@ -373,6 +390,15 @@ class TestValidatorItself:
         assert response.status_code == 400
         assert [entry[3] for entry in validator.rejections] == ["not_version_7"]
 
+    def test_never_accepts_a_body_it_could_not_decode(self):
+        """A 204 here would mean the mock passed a request whose contents it never saw."""
+        validator = UuidWindowValidator("traces", "trace")
+
+        response = validator(FakeRequest(raw=b"\x1f\x8b not gzip, not json"))
+
+        assert response.status_code == 400
+        assert [entry[3] for entry in validator.rejections] == ["undecodable_body"]
+
     def test_accepts_an_id_from_now(self):
         validator = UuidWindowValidator("traces", "trace")
 
@@ -383,8 +409,8 @@ class TestValidatorItself:
 
 
 class FakeRequest:
-    def __init__(self, payload):
-        self._payload = json.dumps(payload).encode("utf-8")
+    def __init__(self, payload=None, raw=None):
+        self._payload = raw if raw is not None else json.dumps(payload).encode("utf-8")
 
     def get_data(self):
         return self._payload
