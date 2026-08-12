@@ -268,6 +268,47 @@ class TestRejectModeSeeding:
         dangling = {item["trace_id"] for item in span_validator.accepted} - trace_ids
         assert dangling == set(), f"{len(dangling)} spans reference traces that never landed"
 
+    def test_the_span_parent_graph_survives_the_id_remap(self, validators):
+        """Every parent_span_id must point at a span that was actually emitted.
+
+        The sibling test covers dangling trace_id; this covers the other reference. Both matter
+        because this PR rewrote the remapping — build_span_writes maps id, trace_id and
+        parent_span_id through separate lookups, so a mistake in one produces a span whose own id is
+        perfectly valid (and passes every window check) while its parent points at nothing.
+        SpanService rejects that; a mock that only inspects `id` would not.
+        """
+        trace_validator, span_validator, _ = validators
+        span_ids = {item["id"] for item in span_validator.accepted}
+
+        dangling = {
+            item["parent_span_id"]
+            for item in span_validator.accepted
+            if item.get("parent_span_id")
+        } - span_ids
+        assert dangling == set(), f"{len(dangling)} parent_span_id(s) reference no emitted span"
+
+        # One root per trace, matching the dataset: a remap that collapsed or invented parents would
+        # change this count even while every individual reference resolved.
+        roots = [
+            item for item in span_validator.accepted if not item.get("parent_span_id")
+        ]
+        assert len(roots) == len(trace_validator.accepted)
+        assert {item["trace_id"] for item in roots} == {
+            item["id"] for item in trace_validator.accepted
+        }
+
+    def test_reference_fields_are_also_v7(self, validators):
+        """IdGenerator.validateVersion applies to the ids a span points at, not just its own."""
+        _, span_validator, _ = validators
+        referenced = {item["trace_id"] for item in span_validator.accepted} | {
+            item["parent_span_id"]
+            for item in span_validator.accepted
+            if item.get("parent_span_id")
+        }
+
+        versions = {uuid.UUID(value).version for value in referenced}
+        assert versions == {7}, f"non-v7 ids referenced by spans: {versions}"
+
     def test_every_accepted_id_is_a_v7_uuid(self, validators):
         """The ticket states the always-on version check passes because all ids are v7 — assert it.
 
