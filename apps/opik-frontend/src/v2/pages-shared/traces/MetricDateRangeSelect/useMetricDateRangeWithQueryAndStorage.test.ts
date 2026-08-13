@@ -193,7 +193,10 @@ describe("useMetricDateRangeWithQueryAndStorage", () => {
       storageKeySuffix: `-${DEMO_PROJECT_NAME}`,
     };
 
-    it("should persist the selection rather than only reflecting it on screen", () => {
+    // Storage is mocked in this file, so this proves the handler reaches the setter — not that the
+    // write lands. The real boundary is covered in
+    // useMetricDateRangeWithQueryAndStorage.persistence.test.ts.
+    it("should forward the selection to the setter", () => {
       const { result } = renderHook(() =>
         useMetricDateRangeWithQueryAndStorage(demoOptions),
       );
@@ -299,9 +302,18 @@ describe("useMetricDateRangeWithQueryAndStorage", () => {
         "opik-project-insights-daterange": DEFAULT_DATE_PRESET,
       };
       vi.mocked(useQueryParamAndLocalStorageState).mockImplementation(
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        ({ localStorageKey, defaultValue }: any) => [
-          storage[localStorageKey] ?? defaultValue,
+        // Typed rather than `any`, so a renamed or dropped forwarded option fails to compile here
+        // instead of silently weakening the assertion.
+        ({
+          localStorageKey,
+          defaultValue,
+        }: {
+          localStorageKey: string;
+          // `unknown`, not `string | null | undefined`: the hook is generic over its value type, so a
+          // narrower annotation here does not typecheck against its signature.
+          defaultValue: unknown;
+        }) => [
+          storage[localStorageKey] ?? (defaultValue as string),
           mockSetValue,
         ],
       );
