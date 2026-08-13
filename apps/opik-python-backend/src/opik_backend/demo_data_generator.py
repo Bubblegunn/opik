@@ -4,6 +4,7 @@ import urllib.request
 import uuid6
 import logging
 import datetime
+import math
 import time
 import uuid
 import random
@@ -41,6 +42,14 @@ tracer = trace.get_tracer(__name__)
 # backend. The demo ships to every deployment and seeds into each user's own workspace, so
 # it has to clear validation on its own; it cannot lean on an environment-specific bypass.
 DEMO_ID_MAX_AGE = datetime.timedelta(hours=10)
+
+# Smallest start_time difference that uuid7_from_datetime can actually encode.
+#
+# It spends 12 bits on the sub-millisecond part (int(micros * 4096 / 1_000_000)), so one step is
+# 1e6/4096 us. A tie-break smaller than this lands entirely below the id's resolution: the colliding
+# traces get byte-identical timestamp bits and their relative order in an id sort falls to the random
+# bits instead of their start_time. Rounded up so a step always crosses a boundary.
+UUID7_SUB_MS_STEP = datetime.timedelta(microseconds=math.ceil(1_000_000 / 4096))
 
 # Name of the project the demo seeds into.
 #
@@ -286,10 +295,12 @@ def compress_demo_timeline(traces, spans, now=None, max_age=DEMO_ID_MAX_AGE):
         # Already inside the window — keep the timeline as-is and only move it to `now`.
         gap_scale = 1.0
 
-    # Break ties when several traces share a start_time down to the millisecond, by nudging
-    # each subsequent one a microsecond later. uuid7_from_datetime derives the UUID's
-    # temporal prefix from the timestamp, so this keeps colliding traces distinguishable and
-    # their relative order stable.
+    # Break ties when several traces share a start_time down to the millisecond, by nudging each
+    # subsequent one forward by one uuid7 sub-millisecond step. The step size matters: ids are minted
+    # from start_time, so a nudge below the id's own resolution leaves the colliding traces with
+    # identical timestamp bits, and sorting the traces list by id then orders them by the random bits
+    # rather than by when they happened. At most 3 demo traces share a millisecond, so the largest
+    # nudge stays inside that millisecond and cannot reorder against the next one.
     ms_counter: dict = {}
     trace_times: dict = {}
     span_times: dict = {}
@@ -306,11 +317,11 @@ def compress_demo_timeline(traces, spans, now=None, max_age=DEMO_ID_MAX_AGE):
             new_start = cursor + (original_trace["start_time"] - block_starts[idx])
 
             ms_key = int(new_start.timestamp() * 1000)
-            offset_us = ms_counter.get(ms_key, 0)
-            ms_counter[ms_key] = offset_us + 1
+            collisions = ms_counter.get(ms_key, 0)
+            ms_counter[ms_key] = collisions + 1
             # Nudge start and end together so the duration is preserved and end_time can
             # never slip behind start_time.
-            new_start = new_start + datetime.timedelta(microseconds=offset_us)
+            new_start = new_start + collisions * UUID7_SUB_MS_STEP
 
             new_end = new_start + (original_trace["end_time"] - original_trace["start_time"])
             trace_times[original_trace["id"]] = (new_start, new_end)

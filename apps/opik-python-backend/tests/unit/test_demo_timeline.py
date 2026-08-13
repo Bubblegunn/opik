@@ -17,6 +17,7 @@ import pytest
 
 from opik_backend.demo_data_generator import (
     DEMO_ID_MAX_AGE,
+    UUID7_SUB_MS_STEP,
     DemoDataContext,
     build_span_writes,
     compress_demo_timeline,
@@ -208,6 +209,37 @@ class TestStructurePreserved:
             start, end = span_times[span["id"]]
             assert end - start == span["end_time"] - span["start_time"], \
                 f"span {span['id']} changed duration"
+
+    def test_sorting_by_id_gives_the_same_order_as_sorting_by_start_time(self, timeline):
+        """The traces list can be sorted by id, so id order has to mean chronological order.
+
+        Ids are minted from start_time, but uuid7_from_datetime only encodes the sub-millisecond part
+        to 12 bits — about 244us per step. A tie-break finer than that leaves colliding traces with
+        identical timestamp bits, and their relative order in an id sort then comes from the random
+        bits instead of from when they happened. 96 of the demo traces share a millisecond with
+        another, so this is the majority of the list, not an edge case.
+        """
+        trace_times, _ = timeline
+        minted = {
+            key: str(uuid7_from_datetime(start))
+            for key, (start, _) in trace_times.items()
+        }
+
+        by_start = sorted(trace_times, key=lambda key: trace_times[key][0])
+        by_id = sorted(trace_times, key=lambda key: minted[key])
+
+        assert by_start == by_id
+
+    def test_the_tie_break_is_at_least_one_id_resolution_step(self):
+        """Guards the step size itself: below this the nudge is invisible to the minted id."""
+        assert UUID7_SUB_MS_STEP >= datetime.timedelta(microseconds=1_000_000 / 4096)
+
+        base = datetime.datetime(2026, 3, 17, 10, 0, 0)
+        first = uuid.UUID(str(uuid7_from_datetime(base)))
+        nudged = uuid.UUID(str(uuid7_from_datetime(base + UUID7_SUB_MS_STEP)))
+
+        # Compare the timestamp bits only (top 64 bits hold ms + sub-ms); the rest is random.
+        assert (first.int >> 64) != (nudged.int >> 64)
 
     def test_trace_ordering_is_preserved(self, timeline):
         trace_times, _ = timeline
