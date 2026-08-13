@@ -40,6 +40,28 @@ const demoOptions = {
   storageKeySuffix: `-${DEMO_PROJECT_NAME}`,
 };
 
+// The two real consumers reach the storage key by different branches of
+// `localStorageKey ?? \`local-${key}\``: the Logs page lets it derive from the URL key, the dashboard
+// passes an explicit base. Both are exercised so a dropped write or failed read is caught on either.
+const CONSUMERS = [
+  {
+    name: "Logs (derived key)",
+    options: demoOptions,
+    demoSlot: DEMO_SLOT,
+    sharedSlot: SHARED_SLOT,
+  },
+  {
+    name: "Dashboards (explicit key)",
+    options: {
+      ...demoOptions,
+      key: "dashboard_time_range",
+      localStorageKey: "opik-project-insights-daterange",
+    },
+    demoSlot: `opik-project-insights-daterange-${DEMO_PROJECT_NAME}`,
+    sharedSlot: "opik-project-insights-daterange",
+  },
+];
+
 describe("demo date range — real storage boundary", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -118,6 +140,50 @@ describe("demo date range — real storage boundary", () => {
       useMetricDateRangeWithQueryAndStorage(demoOptions),
     );
     expect(after.current.dateRangeValue).toBe(DATE_RANGE_PRESET_PAST_7_DAYS);
+  });
+
+  describe.each(CONSUMERS)("$name", ({ options, demoSlot, sharedSlot }) => {
+    it("should write a picked range under this consumer's demo slot", () => {
+      const { result } = renderHook(() =>
+        useMetricDateRangeWithQueryAndStorage(options),
+      );
+
+      act(() => {
+        result.current.handleDateRangeChange(
+          PRESET_DATE_RANGES[DATE_RANGE_PRESET_PAST_7_DAYS],
+        );
+      });
+
+      expect(localStorage.getItem(demoSlot)).toBe(
+        JSON.stringify(DATE_RANGE_PRESET_PAST_7_DAYS),
+      );
+      expect(localStorage.getItem(sharedSlot)).toBeNull();
+    });
+
+    it("should read it back from this consumer's demo slot", () => {
+      localStorage.setItem(
+        demoSlot,
+        JSON.stringify(DATE_RANGE_PRESET_PAST_7_DAYS),
+      );
+
+      const { result } = renderHook(() =>
+        useMetricDateRangeWithQueryAndStorage(options),
+      );
+
+      expect(result.current.dateRangeValue).toBe(DATE_RANGE_PRESET_PAST_7_DAYS);
+    });
+
+    it("should not let this consumer's shared slot decide the demo default", () => {
+      localStorage.setItem(sharedSlot, JSON.stringify(DEFAULT_DATE_PRESET));
+
+      const { result } = renderHook(() =>
+        useMetricDateRangeWithQueryAndStorage(options),
+      );
+
+      expect(result.current.dateRangeValue).toBe(
+        DATE_RANGE_PRESET_PAST_24_HOURS,
+      );
+    });
   });
 
   it("should keep a non-demo project on the shared slot", () => {
