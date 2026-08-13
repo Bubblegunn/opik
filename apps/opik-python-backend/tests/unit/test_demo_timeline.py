@@ -415,6 +415,52 @@ class TestCompressionEdgeCases:
         # Gaps collapsed, so the two 8h blocks sit back to back.
         assert trace_times["b"][0] - trace_times["a"][1] == datetime.timedelta(0)
 
+    def test_separation_survives_many_collisions_in_one_millisecond(self):
+        """The separation must hold across a millisecond boundary, not just inside one.
+
+        A per-millisecond counter cannot: with 10 traces in a bucket the tenth is nudged 9 steps
+        (~2.2ms) while the counter is keyed on the original millisecond, so it overtakes a trace that
+        genuinely started 1ms later. Walking in chronological order and pushing each trace one step
+        past its predecessor moves that later trace forward too, so it cannot be overtaken.
+        """
+        base = datetime.datetime(2026, 1, 1, 0, 0, 0)
+        crowded = [
+            {"id": f"t{index:02d}", "start_time": base,
+             "end_time": base + datetime.timedelta(seconds=1)}
+            for index in range(10)
+        ]
+        later_start = base + datetime.timedelta(milliseconds=1)
+        crowded.append({"id": "later", "start_time": later_start,
+                        "end_time": later_start + datetime.timedelta(seconds=1)})
+
+        trace_times, _ = compress_demo_timeline(crowded, [], now=NOW)
+
+        by_start = sorted(trace_times, key=lambda key: (trace_times[key][0], key))
+        by_id = sorted(
+            trace_times, key=lambda key: str(uuid7_from_datetime(trace_times[key][0])))
+
+        assert by_start == by_id
+        # The naturally later trace must still be last, not overtaken by the crowd.
+        assert by_id[-1] == "later"
+
+    def test_consecutive_traces_are_at_least_one_id_step_apart(self, timeline):
+        """No two traces may land closer than the id can resolve, or their id order is random."""
+        trace_times, _ = timeline
+        starts = sorted(start for start, _ in trace_times.values())
+
+        closest = min(later - earlier for earlier, later in zip(starts, starts[1:]))
+        assert closest >= UUID7_SUB_MS_STEP
+
+    @pytest.mark.parametrize("bad", [
+        datetime.timedelta(0),
+        datetime.timedelta(seconds=-1),
+    ])
+    def test_rejects_a_non_positive_max_age(self, bad):
+        """A zero or negative target cannot be satisfied; say so rather than emitting a layout that
+        silently ignores it."""
+        with pytest.raises(ValueError, match="max_age must be positive"):
+            compress_demo_timeline(demo_traces, demo_spans, now=NOW, max_age=bad)
+
     def test_respects_a_custom_max_age(self):
         trace_times, span_times = compress_demo_timeline(
             demo_traces, demo_spans, now=NOW, max_age=datetime.timedelta(hours=4))

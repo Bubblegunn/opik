@@ -235,11 +235,16 @@ def compress_demo_timeline(traces, spans, now=None, max_age=DEMO_ID_MAX_AGE):
     - traces: List of trace dictionaries to lay out
     - spans: List of span dictionaries, rebased onto their parent trace (see rebase_span_tree)
     - now: Instant the newest trace should end at; defaults to datetime.datetime.now()
-    - max_age: Width of the target window
+    - max_age: Width of the target window. Must be positive. Only the gaps between blocks are
+      compressible, so when `max_age` is smaller than the blocks' own combined duration the gaps
+      collapse to zero and the result spans that combined duration instead — the shipped dataset is
+      ~7min of trace time against a 10h target, so the guarantee holds there with room to spare.
 
     Returns:
     - tuple: (dict old trace id -> (start, end), dict old span id -> (start, end))
     """
+    if max_age <= datetime.timedelta(0):
+        raise ValueError(f"max_age must be positive, got {max_age}")
     if now is None:
         now = datetime.datetime.now()
     if not traces:
@@ -295,44 +300,48 @@ def compress_demo_timeline(traces, spans, now=None, max_age=DEMO_ID_MAX_AGE):
         # Already inside the window — keep the timeline as-is and only move it to `now`.
         gap_scale = 1.0
 
-    # Break ties when several traces share a start_time down to the millisecond, by nudging each
-    # subsequent one forward by one uuid7 sub-millisecond step. The step size matters: ids are minted
-    # from start_time, so a nudge below the id's own resolution leaves the colliding traces with
-    # identical timestamp bits, and sorting the traces list by id then orders them by the random bits
-    # rather than by when they happened. At most 3 demo traces share a millisecond, so the largest
-    # nudge stays inside that millisecond and cannot reorder against the next one.
-    ms_counter: dict = {}
-    trace_times: dict = {}
-    span_times: dict = {}
+    raw_starts: list = []
 
     cursor = now - max_age
     for idx, block in enumerate(ordered_blocks):
-        # Sorted, not input order: 40 of the thread blocks hold traces sharing an identical
-        # start_time, and the tie-break below hands out its microsecond nudges in iteration order.
-        # Since ids are minted from start_time, input order would otherwise decide those traces'
-        # relative order in the UI, so reordering the dataset would reshuffle conversation turns.
-        # Tie-broken on id to make the sort total.
+        # Sorted, not input order: reordering the dataset must not change the layout, and the
+        # separation pass below walks in this order. Tie-broken on id to make the sort total.
         for original_trace in sorted(
                 block, key=lambda item: (item["start_time"], item["id"])):
-            new_start = cursor + (original_trace["start_time"] - block_starts[idx])
-
-            ms_key = int(new_start.timestamp() * 1000)
-            collisions = ms_counter.get(ms_key, 0)
-            ms_counter[ms_key] = collisions + 1
-            # Nudge start and end together so the duration is preserved and end_time can
-            # never slip behind start_time.
-            new_start = new_start + collisions * UUID7_SUB_MS_STEP
-
-            new_end = new_start + (original_trace["end_time"] - original_trace["start_time"])
-            trace_times[original_trace["id"]] = (new_start, new_end)
-            # Rebase against the trace's final start so the span tree tracks the microsecond
-            # nudge above and stays aligned with its trace.
-            span_times.update(
-                rebase_span_tree(spans_by_trace.get(original_trace["id"], []), new_start))
+            raw_starts.append((
+                cursor + (original_trace["start_time"] - block_starts[idx]),
+                original_trace["id"],
+                original_trace["end_time"] - original_trace["start_time"],
+            ))
 
         cursor = cursor + block_durations[idx]
         if idx < len(gaps):
             cursor = cursor + gaps[idx] * gap_scale
+
+    # Separate traces that would otherwise share an id timestamp. uuid7_from_datetime resolves only
+    # ~244us (12 sub-millisecond bits), so two traces closer than one step get identical timestamp
+    # bits and an id sort orders them by their random bits instead of by when they happened.
+    #
+    # Expressed as a minimum separation walked in chronological order, not as a per-millisecond
+    # counter. A counter keyed on the original millisecond cannot see a nudge that crosses into the
+    # next one, so with enough collisions in a bucket it could push a trace past a naturally later
+    # trace and invert them. Taking the later of "its own start" and "one step after its predecessor"
+    # cannot: each trace lands strictly after the one before it, for any dataset, and a trace is only
+    # ever moved forward by the minimum needed.
+    trace_times: dict = {}
+    span_times: dict = {}
+
+    previous_start = None
+    for raw_start, trace_id, duration in sorted(raw_starts, key=lambda item: (item[0], item[1])):
+        new_start = raw_start
+        if previous_start is not None and new_start < previous_start + UUID7_SUB_MS_STEP:
+            new_start = previous_start + UUID7_SUB_MS_STEP
+        previous_start = new_start
+
+        trace_times[trace_id] = (new_start, new_start + duration)
+        # Rebased from the final start so the span tree tracks the separation and stays aligned with
+        # its trace.
+        span_times.update(rebase_span_tree(spans_by_trace.get(trace_id, []), new_start))
 
     # The walk above lands a little short of `now` — clamped overlaps and gap_scale rounding
     # leave a residue — so close the gap and pin the newest trace's end to `now`. The shift is
