@@ -2,9 +2,12 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { renderHook } from "@testing-library/react";
 import {
   DATE_RANGE_PRESET_ALLTIME,
+  DATE_RANGE_PRESET_PAST_7_DAYS,
   DATE_RANGE_PRESET_PAST_24_HOURS,
   DEFAULT_DATE_PRESET,
 } from "./constants";
+import { PRESET_DATE_RANGES } from "@/shared/DateRangeSelect";
+import { DEMO_PROJECT_NAME } from "@/constants/shared";
 import { INTERVAL_TYPE } from "@/api/projects/useProjectMetric";
 
 vi.mock("@/hooks/useQueryParamAndLocalStorageState", () => ({
@@ -178,6 +181,70 @@ describe("useMetricDateRangeWithQueryAndStorage", () => {
       expect(result.current.dateRangeValue).toBe(
         DATE_RANGE_PRESET_PAST_24_HOURS,
       );
+    });
+  });
+
+  // The 24h value is only the *initial* default. Stated publicly in review: "this change updates the
+  // default time selector for these projects, so the client can still change it." These pin that —
+  // a user's own selection must win and must never be reverted to 24h.
+  describe("a user's own selection on the demo project", () => {
+    const demoOptions = {
+      defaultValue: DATE_RANGE_PRESET_PAST_24_HOURS,
+      storageKeySuffix: `-${DEMO_PROJECT_NAME}`,
+    };
+
+    it("should persist the selection rather than only reflecting it on screen", () => {
+      const { result } = renderHook(() =>
+        useMetricDateRangeWithQueryAndStorage(demoOptions),
+      );
+
+      result.current.handleDateRangeChange(
+        PRESET_DATE_RANGES[DATE_RANGE_PRESET_PAST_7_DAYS],
+      );
+
+      expect(mockSetValue).toHaveBeenCalledWith(DATE_RANGE_PRESET_PAST_7_DAYS);
+    });
+
+    it("should keep the selection instead of reverting to the 24h default", () => {
+      vi.mocked(useQueryParamAndLocalStorageState).mockReturnValue([
+        DATE_RANGE_PRESET_PAST_7_DAYS,
+        mockSetValue,
+      ]);
+
+      const { result } = renderHook(() =>
+        useMetricDateRangeWithQueryAndStorage(demoOptions),
+      );
+
+      expect(result.current.dateRangeValue).toBe(DATE_RANGE_PRESET_PAST_7_DAYS);
+    });
+
+    it("should not write anything back after a selection is in place", () => {
+      // Nothing may re-apply the default over the stored choice on a later render or remount.
+      vi.mocked(useQueryParamAndLocalStorageState).mockReturnValue([
+        DATE_RANGE_PRESET_PAST_7_DAYS,
+        mockSetValue,
+      ]);
+
+      const { rerender } = renderHook(() =>
+        useMetricDateRangeWithQueryAndStorage(demoOptions),
+      );
+      rerender();
+
+      expect(mockSetValue).not.toHaveBeenCalled();
+    });
+
+    it("should let the granularity follow the selection, not the demo default", () => {
+      vi.mocked(useQueryParamAndLocalStorageState).mockReturnValue([
+        DATE_RANGE_PRESET_PAST_7_DAYS,
+        mockSetValue,
+      ]);
+
+      const { result } = renderHook(() =>
+        useMetricDateRangeWithQueryAndStorage(demoOptions),
+      );
+
+      // 7 days buckets daily; if the 24h default were still winning this would be HOURLY.
+      expect(result.current.interval).toBe(INTERVAL_TYPE.DAILY);
     });
   });
 
