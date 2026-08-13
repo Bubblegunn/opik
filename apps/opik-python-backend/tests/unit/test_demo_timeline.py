@@ -18,6 +18,7 @@ import pytest
 from opik_backend.demo_data_generator import (
     DEMO_ID_MAX_AGE,
     UUID7_SUB_MS_STEP,
+    separate_trace_starts,
     DemoDataContext,
     build_span_writes,
     compress_demo_timeline,
@@ -348,6 +349,61 @@ class TestRootSpanDetection:
         # ...and build_span_writes must not then give it a parent.
         writes = build_span_writes([span], rebased, DemoDataContext(), "proj")
         assert not writes[0].parent_span_id
+
+
+class TestSeparateTraceStarts:
+    """The uuid7 ordering rule on its own, without going through the compressor."""
+
+    def test_leaves_already_separated_starts_alone(self):
+        base = datetime.datetime(2026, 1, 1, 0, 0, 0)
+        timings = [
+            (base, "a", datetime.timedelta(seconds=1)),
+            (base + datetime.timedelta(seconds=5), "b", datetime.timedelta(seconds=1)),
+        ]
+
+        assert separate_trace_starts(timings) == timings
+
+    def test_pushes_an_identical_start_one_step_later(self):
+        base = datetime.datetime(2026, 1, 1, 0, 0, 0)
+        timings = [
+            (base, "a", datetime.timedelta(seconds=1)),
+            (base, "b", datetime.timedelta(seconds=2)),
+        ]
+
+        separated = separate_trace_starts(timings)
+
+        assert [item[1] for item in separated] == ["a", "b"]
+        assert separated[1][0] - separated[0][0] == UUID7_SUB_MS_STEP
+        # Durations ride along untouched.
+        assert [item[2] for item in separated] == [
+            datetime.timedelta(seconds=1), datetime.timedelta(seconds=2)]
+
+    def test_never_overtakes_a_naturally_later_trace(self):
+        """The failure a per-millisecond counter allows: enough collisions to jump the next trace."""
+        base = datetime.datetime(2026, 1, 1, 0, 0, 0)
+        crowd = [(base, f"t{i:02d}", datetime.timedelta(seconds=1)) for i in range(10)]
+        crowd.append(
+            (base + datetime.timedelta(milliseconds=1), "later", datetime.timedelta(seconds=1)))
+
+        separated = separate_trace_starts(crowd)
+
+        assert separated[-1][1] == "later"
+        starts = [item[0] for item in separated]
+        assert starts == sorted(starts)
+        assert all(
+            later - earlier >= UUID7_SUB_MS_STEP
+            for earlier, later in zip(starts, starts[1:]))
+
+    def test_is_order_independent(self):
+        base = datetime.datetime(2026, 1, 1, 0, 0, 0)
+        timings = [(base, "b", datetime.timedelta(seconds=1)),
+                   (base, "a", datetime.timedelta(seconds=1)),
+                   (base, "c", datetime.timedelta(seconds=1))]
+
+        assert separate_trace_starts(timings) == separate_trace_starts(list(reversed(timings)))
+
+    def test_handles_an_empty_input(self):
+        assert separate_trace_starts([]) == []
 
 
 class TestCompressionEdgeCases:
